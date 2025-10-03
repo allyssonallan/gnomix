@@ -161,8 +161,55 @@ def vcf_to_npy(vcf_data, snp_pos_fmt=None, snp_ref_fmt=None, miss_fill=2, return
 def read_genetic_map(genetic_map_path, chm=None, header=None):
 
     gen_map_df = pd.read_csv(genetic_map_path, delimiter="\t", header=header, comment="#", dtype=str)
-    gen_map_df.columns = ["chm","pos","pos_cm"]
-    
+
+    if header is None:
+        gen_map_df.columns = ["chm", "pos", "pos_cm"]
+    else:
+        rename_map = {}
+        assigned_targets = {col for col in gen_map_df.columns if col in {"chm", "pos", "pos_cm"}}
+
+        def _normalized_tokens(column_name):
+            normalized = column_name.strip().lower()
+            for char in ["(", ")", "[", "]", ",", ":", ";", "/", "-", "_", "."]:
+                normalized = normalized.replace(char, " ")
+            normalized = " ".join(normalized.split())
+            return normalized.split(" ") if normalized else []
+
+        for col in gen_map_df.columns:
+            tokens = _normalized_tokens(col)
+            token_set = set(tokens)
+
+            chrom_tokens = {"chromosome", "chrom", "chr", "chrm", "chm"}
+            pos_tokens = {"pos", "position", "positions", "coordinate", "coordinates", "bp", "base", "basepair", "basepairs"}
+            genetic_tokens = {"genetic", "cm", "centimorgan", "centimorgans", "morgan", "morgans"}
+            rate_tokens = {"rate", "rates"}
+
+            has_chrom_token = bool(token_set & chrom_tokens)
+            has_pos_token = bool(token_set & pos_tokens) or any(tok.startswith("pos") for tok in tokens)
+            has_genetic_token = bool(token_set & genetic_tokens)
+            has_map_token = "map" in token_set or "maps" in token_set
+            has_rate_token = bool(token_set & rate_tokens)
+
+            if has_chrom_token and "chm" not in assigned_targets:
+                rename_map[col] = "chm"
+                assigned_targets.add("chm")
+            elif ((has_genetic_token and not has_rate_token) or (("genetic" in token_set or has_map_token) and not has_rate_token)) and "pos_cm" not in assigned_targets:
+                rename_map[col] = "pos_cm"
+                assigned_targets.add("pos_cm")
+            elif has_pos_token and "pos" not in assigned_targets:
+                rename_map[col] = "pos"
+                assigned_targets.add("pos")
+
+        gen_map_df = gen_map_df.rename(columns=rename_map)
+
+        missing_columns = {"chm", "pos", "pos_cm"} - set(gen_map_df.columns)
+        if missing_columns:
+            raise Exception(
+                "Genetic map format not understood. Expected columns containing chromosome, "
+                "position (bp) and genetic map (cM) information but could not find: "
+                + ", ".join(sorted(missing_columns))
+            )
+
     try:
         gen_map_df = gen_map_df.astype({'chm': str, 'pos': int, 'pos_cm': float})
     except ValueError:
